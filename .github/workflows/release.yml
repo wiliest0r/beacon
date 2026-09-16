@@ -17,6 +17,8 @@ jobs:
   build-and-package:
     name: Build & Release WASM
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.vars.outputs.release_tag }}
     permissions:
       contents: write
       packages: write
@@ -56,8 +58,10 @@ jobs:
             TAG="${{ github.event.client_payload.tag }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
-          else
+          elif [ -n "${{ inputs.tag }}" ]; then
             TAG="${{ inputs.tag }}"
+          else
+            TAG="v0.1.0"
           fi
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -80,5 +84,5 @@ jobs:
     needs: build-and-package
     uses: wiliest0r/gh-actions-central/.github/workflows/release-wasm-oci.yml@main
     with:
-      artifact-tag: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.event.client_payload.tag }}
+      artifact-tag: ${{ needs.build-and-package.outputs.release_tag }}
       image-name: 'beacon-wasm'
