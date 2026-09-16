@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  rust-ci:
+    uses: wiliest0r/gh-actions-central/.github/workflows/rust-wasm-ci.yml@main
+    with:
+      rust-version: 'stable'
+      target: 'wasm32-wasip1'
+      max-size-mb: 3

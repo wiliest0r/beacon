@@ -1,0 +1,20 @@
+spin_manifest_version = 2
+
+[application]
+name = "beacon-server"
+version = "0.1.0"
+authors = ["Analytics Platform Team"]
+description = "Ultra-high performance analytics ingestion backend in WebAssembly"
+
+[[trigger.http]]
+route = "/..."
+component = "beacon-server"
+
+[component.beacon-server]
+source = "target/wasm32-wasip1/release/beacon_server.wasm"
+allowed_outbound_hosts = []
+files = [{ source = "static/t.min.js", destination = "t.min.js" }]
+
+[component.beacon-server.build]
+command = "cargo build --release --target wasm32-wasip1"
+watch = ["src/**/*.rs", "Cargo.toml"]
