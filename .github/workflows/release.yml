@@ -5,20 +5,13 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag version (e.g. v0.1.0)'
-        required: true
-        default: 'v0.1.0'
   repository_dispatch:
     types: [ web_tag_released ]
 
 jobs:
-  build-and-package:
-    name: Build & Release WASM
+  build-and-release:
+    name: Build, Release & Publish OCI
     runs-on: ubuntu-latest
-    outputs:
-      release_tag: ${{ steps.vars.outputs.release_tag }}
     permissions:
       contents: write
       packages: write
@@ -33,13 +26,16 @@ jobs:
           toolchain: stable
           targets: wasm32-wasip1
 
-      - name: Install binaryen (wasm-opt)
-        run: sudo apt-get update && sudo apt-get install -y binaryen
+      - name: Install binaryen (wasm-opt) & ORAS
+        run: |
+          sudo apt-get update && sudo apt-get install -y binaryen
 
-      - name: Download latest Web Tag bundle (Sync)
+      - name: Setup ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Download Latest Web Tag Bundle (Sync)
         run: |
           mkdir -p static
-          # Download latest t.min.js from web-tag release if available, fallback to repo static
           curl -sL https://github.com/${{ github.repository_owner }}/web-tag/releases/latest/download/t.min.js -o static/t.min.js || true
 
       - name: Build WASM Release
@@ -48,8 +44,6 @@ jobs:
       - name: Optimize WASM Binary
         run: |
           wasm-opt -Oz target/wasm32-wasip1/release/beacon_server.wasm -o target/wasm32-wasip1/release/beacon_server-opt.wasm
-          mkdir -p artifacts
-          cp target/wasm32-wasip1/release/beacon_server-opt.wasm artifacts/beacon_server.wasm
 
       - name: Determine Release Tag
         id: vars
@@ -58,8 +52,6 @@ jobs:
             TAG="${{ github.event.client_payload.tag }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
-          elif [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
           else
             TAG="v0.1.0"
           fi
@@ -73,16 +65,22 @@ jobs:
           files: target/wasm32-wasip1/release/beacon_server-opt.wasm
           generate_release_notes: true
 
-      - name: Upload Artifact for OCI Publish
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm-release-binary
-          path: artifacts/beacon_server.wasm
+      - name: Log In to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
 
-  publish-ghcr-oci:
-    name: Publish to GHCR OCI
-    needs: build-and-package
-    uses: wiliest0r/gh-actions-central/.github/workflows/release-wasm-oci.yml@main
-    with:
-      artifact-tag: ${{ needs.build-and-package.outputs.release_tag }}
-      image-name: 'beacon-wasm'
+      - name: Publish WASM to GHCR OCI
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.release_tag }}"
+          WASM_FILE="target/wasm32-wasip1/release/beacon_server-opt.wasm"
+          TARGET_REF="ghcr.io/${{ github.repository_owner }}/beacon-wasm:$IMAGE_TAG"
+          LATEST_REF="ghcr.io/${{ github.repository_owner }}/beacon-wasm:latest"
+
+          echo "Publishing to $TARGET_REF and $LATEST_REF..."
+          oras push "$TARGET_REF" \
+            --artifact-type application/vnd.module.wasm.content.layer.v1+wasm \
+            "$WASM_FILE":application/vnd.module.wasm.content.layer.v1+wasm
+
+          oras push "$LATEST_REF" \
+            --artifact-type application/vnd.module.wasm.content.layer.v1+wasm \
+            "$WASM_FILE":application/vnd.module.wasm.content.layer.v1+wasm
