@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag version (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+  repository_dispatch:
+    types: [ web_tag_released ]
+
+jobs:
+  build-and-package:
+    name: Build & Release WASM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout Beacon
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-wasip1
+
+      - name: Install binaryen (wasm-opt)
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: Download latest Web Tag bundle (Sync)
+        run: |
+          mkdir -p static
+          # Download latest t.min.js from web-tag release if available, fallback to repo static
+          curl -sL https://github.com/${{ github.repository_owner }}/web-tag/releases/latest/download/t.min.js -o static/t.min.js || true
+
+      - name: Build WASM Release
+        run: cargo build --release --target wasm32-wasip1
+
+      - name: Optimize WASM Binary
+        run: |
+          wasm-opt -Oz target/wasm32-wasip1/release/beacon_server.wasm -o target/wasm32-wasip1/release/beacon_server-opt.wasm
+          mkdir -p artifacts
+          cp target/wasm32-wasip1/release/beacon_server-opt.wasm artifacts/beacon_server.wasm
+
+      - name: Determine Release Tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            TAG="${{ github.event.client_payload.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.release_tag }}
+          name: Release ${{ steps.vars.outputs.release_tag }}
+          files: target/wasm32-wasip1/release/beacon_server-opt.wasm
+          generate_release_notes: true
+
+      - name: Upload Artifact for OCI Publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-release-binary
+          path: artifacts/beacon_server.wasm
+
+  publish-ghcr-oci:
+    name: Publish to GHCR OCI
+    needs: build-and-package
+    uses: wiliest0r/gh-actions-central/.github/workflows/release-wasm-oci.yml@main
+    with:
+      artifact-tag: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.event.client_payload.tag }}
+      image-name: 'beacon-wasm'
