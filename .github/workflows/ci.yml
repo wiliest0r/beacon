@@ -1,4 +1,4 @@
-name: CI
+name: CI & Security Gates
 
 on:
   push:
@@ -7,7 +7,17 @@ on:
     branches: [ main, stage, develop ]
 
 jobs:
+  security-gate:
+    name: Security & Secret Scan Gate
+    uses: wiliest0r/gh-actions-central/.github/workflows/security-scan.yml@main
+    permissions:
+      contents: read
+    with:
+      fail-on-vulnerabilities: true
+
   rust-ci:
+    name: Rust WASM CI
+    needs: [ security-gate ]
     uses: wiliest0r/gh-actions-central/.github/workflows/rust-wasm-ci.yml@main
     with:
       rust-version: 'stable'
