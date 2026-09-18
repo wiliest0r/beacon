@@ -1,9 +1,10 @@
 use spin_sdk::http::{Method, Request, Response};
 use spin_sdk::http_component;
 
-mod handlers;
-mod models;
-mod security;
+pub mod handlers;
+pub mod models;
+pub mod observability;
+pub mod security;
 
 use handlers::{handle_collect_event, handle_serve_tag};
 use models::ClientConfig;
