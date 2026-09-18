@@ -27,6 +27,7 @@ jobs:
   build-and-deliver:
     name: Build WASM & Deploy to GKE
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env || 'dev' }}
 
     steps:
       - name: Checkout Beacon
