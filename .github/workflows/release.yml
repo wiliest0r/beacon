@@ -104,8 +104,10 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - name: Set up Cloud SDK
+      - name: Set up Cloud SDK & GKE Auth Plugin
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'gke-gcloud-auth-plugin'
 
       - name: Configure Docker for Google Artifact Registry
         run: |
@@ -127,6 +129,8 @@ jobs:
 
       - name: Authenticate GKE & Rollout (Dev Auto-Deploy)
         if: github.ref == 'refs/heads/develop' || github.event_name == 'repository_dispatch' || github.event.inputs.target_env == 'dev'
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: 'True'
         run: |
           echo "Obtaining GKE cluster credentials..."
           gcloud container clusters get-credentials ${{ vars.GKE_CLUSTER_NAME }} \
