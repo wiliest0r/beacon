@@ -3,10 +3,17 @@ use spin_sdk::http::{Request, Response};
 use std::fs;
 
 use crate::models::{ClientConfig, IngestedParquetEvent, RawClientPayload};
+use crate::observability::{extract_trace_context, log_structured};
 use crate::security::{generate_ephemeral_token, is_origin_allowed, validate_ephemeral_token};
 
 /// Serve tag.js enriched with ephemeral handshake token and client config
-pub fn handle_serve_tag(_req: &Request, config: &ClientConfig) -> Response {
+pub fn handle_serve_tag(req: &Request, config: &ClientConfig) -> Response {
+    let (trace_id, span_id) = extract_trace_context(
+        req.header("x-cloud-trace-context").and_then(|h| h.as_str()),
+        req.header("traceparent").and_then(|h| h.as_str()),
+        std::env::var("GCP_PROJECT").ok().as_deref(),
+    );
+
     let now = Utc::now().timestamp();
     let token = generate_ephemeral_token(&config.hmac_secret, &config.app_id, now);
 
@@ -22,6 +29,17 @@ pub fn handle_serve_tag(_req: &Request, config: &ClientConfig) -> Response {
 
     let final_js = format!("{}{}", injected_config, base_script);
 
+    log_structured(
+        "INFO",
+        "serve_tag",
+        &format!("Served client tag.js bundle for app {}", config.app_id),
+        trace_id.as_deref(),
+        span_id.as_deref(),
+        Some(serde_json::json!({
+            "app_id": config.app_id,
+        })),
+    );
+
     Response::builder()
         .status(200)
         .header("Content-Type", "application/javascript; charset=utf-8")
@@ -32,7 +50,13 @@ pub fn handle_serve_tag(_req: &Request, config: &ClientConfig) -> Response {
 
 /// Ingest and validate telemetry event, outputting Parquet-ready record
 pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
-    // 1. Extract network metadata
+    // 1. Extract network metadata and trace context
+    let (trace_id, span_id) = extract_trace_context(
+        req.header("x-cloud-trace-context").and_then(|h| h.as_str()),
+        req.header("traceparent").and_then(|h| h.as_str()),
+        std::env::var("GCP_PROJECT").ok().as_deref(),
+    );
+
     let origin = req.header("origin").and_then(|h| h.as_str());
     let referer = req.header("referer").and_then(|h| h.as_str());
     let user_agent = req
@@ -47,6 +71,15 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
     // 2. Parse payload body
     let body_bytes = req.body();
     let Ok(payload) = serde_json::from_slice::<RawClientPayload>(body_bytes) else {
+        log_structured(
+            "WARNING",
+            "bad_request",
+            "Failed to deserialize JSON body for /v1/sync",
+            trace_id.as_deref(),
+            span_id.as_deref(),
+            None,
+        );
+
         return Response::builder()
             .status(400)
             .header("Access-Control-Allow-Origin", "*")
@@ -108,12 +141,53 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
         custom_properties_json: serde_json::to_string(&payload.properties).unwrap_or_default(),
     };
 
-    // 5. Emit structured JSON to stdout (for K8s vector/fluent-bit to batch into Parquet/S3)
+    // 5. Emit structured JSON to stdout (for K8s vector/fluent-bit to batch into Parquet/GCS Lakehouse)
     if let Ok(serialized) = serde_json::to_string(&parquet_record) {
         println!("{}", serialized);
     }
 
-    // 6. Return standard 204 No Content response
+    // 6. Emit structured log to stderr for Google Cloud Logging & APM tracing
+    if is_quarantined {
+        log_structured(
+            "WARNING",
+            "event_quarantined",
+            &format!(
+                "Event {} quarantined for app {}: {}",
+                parquet_record.event_id,
+                parquet_record.app_id,
+                parquet_record.quarantine_reason.as_deref().unwrap_or("unknown")
+            ),
+            trace_id.as_deref(),
+            span_id.as_deref(),
+            Some(serde_json::json!({
+                "event_id": parquet_record.event_id,
+                "event_name": parquet_record.event_name,
+                "app_id": parquet_record.app_id,
+                "is_quarantined": true,
+                "quarantine_reason": parquet_record.quarantine_reason,
+            })),
+        );
+    } else {
+        log_structured(
+            "INFO",
+            "event_ingested",
+            &format!(
+                "Event {} ({}) ingested successfully",
+                parquet_record.event_id,
+                parquet_record.event_name
+            ),
+            trace_id.as_deref(),
+            span_id.as_deref(),
+            Some(serde_json::json!({
+                "event_id": parquet_record.event_id,
+                "event_name": parquet_record.event_name,
+                "app_id": parquet_record.app_id,
+                "is_quarantined": false,
+            })),
+        );
+    }
+
+    // 7. Return standard 204 No Content response
     Response::builder()
         .status(204)
         .header("Access-Control-Allow-Origin", "*")
