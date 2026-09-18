@@ -14,8 +14,28 @@ pub fn handle_serve_tag(req: &Request, config: &ClientConfig) -> Response {
         std::env::var("GCP_PROJECT").ok().as_deref(),
     );
 
+    // Extract tenant_id from query parameters (tid or tenant_id) or header
+    let query_str = req.query();
+    let query_tid = query_str.split('&').find_map(|param| {
+        let mut parts = param.split('=');
+        let key = parts.next()?;
+        let val = parts.next()?;
+        if key == "tid" || key == "tenant_id" {
+            Some(val.to_string())
+        } else {
+            None
+        }
+    });
+
+    let tenant_id = req
+        .header("x-tenant-id")
+        .and_then(|h| h.as_str())
+        .map(String::from)
+        .or(query_tid)
+        .unwrap_or_else(|| config.app_id.clone());
+
     let now = Utc::now().timestamp();
-    let token = generate_ephemeral_token(&config.hmac_secret, &config.app_id, now);
+    let token = generate_ephemeral_token(&config.hmac_secret, &tenant_id, now);
 
     // Read base tag script from WASM bundle files
     let base_script = fs::read_to_string("t.min.js")
@@ -23,8 +43,8 @@ pub fn handle_serve_tag(req: &Request, config: &ClientConfig) -> Response {
 
     // Inject initial configuration and token
     let injected_config = format!(
-        "window.__OP_CONFIG__={{appId:\"{}\",token:\"{}\",spa:{},ecommerce:{}}};",
-        config.app_id, token, config.enable_spa, config.enable_ecommerce
+        "window.__BEACON_CONFIG__={{tenantId:\"{}\",appId:\"{}\",token:\"{}\",spa:{},ecommerce:{}}};window.__OP_CONFIG__=window.__BEACON_CONFIG__;",
+        tenant_id, config.app_id, token, config.enable_spa, config.enable_ecommerce
     );
 
     let final_js = format!("{}{}", injected_config, base_script);
@@ -32,10 +52,11 @@ pub fn handle_serve_tag(req: &Request, config: &ClientConfig) -> Response {
     log_structured(
         "INFO",
         "serve_tag",
-        &format!("Served client tag.js bundle for app {}", config.app_id),
+        &format!("Served client tag.js bundle for tenant {}", tenant_id),
         trace_id.as_deref(),
         span_id.as_deref(),
         Some(serde_json::json!({
+            "tenant_id": tenant_id,
             "app_id": config.app_id,
         })),
     );
@@ -87,6 +108,25 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
             .build();
     };
 
+    // Resolve tenant_id and app_id
+    let tenant_id = req
+        .header("x-tenant-id")
+        .and_then(|h| h.as_str())
+        .map(String::from)
+        .or_else(|| payload.tenant_id.clone())
+        .or_else(|| payload.app_id.clone())
+        .unwrap_or_else(|| config.app_id.clone());
+
+    let app_id = payload.app_id.clone().unwrap_or_else(|| tenant_id.clone());
+
+    let visitor_id = payload
+        .visitor_id
+        .clone()
+        .or_else(|| payload.anonymous_id.clone())
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    let anonymous_id = visitor_id.clone();
+
     // 3. Security evaluation: determine if event should be quarantined
     let mut is_quarantined = false;
     let mut quarantine_reason = None;
@@ -101,7 +141,8 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
     // Check ephemeral HMAC token
     if !is_quarantined {
         if let Some(ref token) = payload.token {
-            if let Err(err) = validate_ephemeral_token(&config.hmac_secret, token, &payload.app_id)
+            if let Err(err) = validate_ephemeral_token(&config.hmac_secret, token, &tenant_id)
+                .or_else(|_| validate_ephemeral_token(&config.hmac_secret, token, &app_id))
             {
                 is_quarantined = true;
                 quarantine_reason = Some(format!("token_validation_failed: {}", err));
@@ -117,17 +158,67 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
     let page = context.and_then(|c| c.page.as_ref());
     let screen = context.and_then(|c| c.screen.as_ref());
 
+    // Extract Marketing & AdTech dimensions
+    let marketing = payload.marketing.as_ref();
+    let gclid = marketing.and_then(|m| m.gclid.clone());
+    let fbclid = marketing.and_then(|m| m.fbclid.clone());
+    let gbraid = marketing.and_then(|m| m.gbraid.clone());
+    let wbraid = marketing.and_then(|m| m.wbraid.clone());
+    let msclkid = marketing.and_then(|m| m.msclkid.clone());
+    let ttclid = marketing.and_then(|m| m.ttclid.clone());
+    let utm_source = marketing.and_then(|m| m.utm_source.clone());
+    let utm_medium = marketing.and_then(|m| m.utm_medium.clone());
+    let utm_campaign = marketing.and_then(|m| m.utm_campaign.clone());
+    let utm_term = marketing.and_then(|m| m.utm_term.clone());
+    let utm_content = marketing.and_then(|m| m.utm_content.clone());
+
+    let has_ad_attribution = gclid.is_some()
+        || fbclid.is_some()
+        || gbraid.is_some()
+        || wbraid.is_some()
+        || msclkid.is_some()
+        || ttclid.is_some();
+
+    let is_conversion = matches!(
+        payload.event_name.to_lowercase().as_str(),
+        "purchase" | "lead" | "sign_up" | "signup" | "subscribe" | "conversion" | "submit_form"
+    );
+
+    // Extract User Identity dimensions
+    let user_identity = payload.user_identity.as_ref();
+    let hashed_email = user_identity.and_then(|u| u.hashed_email.clone());
+    let hashed_phone = user_identity.and_then(|u| u.hashed_phone.clone());
+    let crm_lead_id = user_identity.and_then(|u| u.crm_lead_id.clone());
+
     let parquet_record = IngestedParquetEvent {
+        tenant_id: tenant_id.clone(),
+        app_id: app_id.clone(),
         event_id: payload.event_id,
-        app_id: payload.app_id,
         event_name: payload.event_name,
         client_timestamp: payload.client_timestamp,
         server_timestamp: Utc::now(),
         is_quarantined,
         quarantine_reason,
-        anonymous_id: payload.anonymous_id,
+        visitor_id,
+        anonymous_id,
         session_id: payload.session_id,
         user_id: payload.user_id,
+        hashed_email,
+        hashed_phone,
+        crm_lead_id,
+        has_ad_attribution,
+        is_conversion,
+        gclid,
+        fbclid,
+        gbraid,
+        wbraid,
+        msclkid,
+        ttclid,
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        utm_term,
+        utm_content,
         page_url: page.and_then(|p| p.url.clone()),
         page_path: page.and_then(|p| p.path.clone()),
         page_title: page.and_then(|p| p.title.clone()),
@@ -141,7 +232,7 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
         custom_properties_json: serde_json::to_string(&payload.properties).unwrap_or_default(),
     };
 
-    // 5. Emit structured JSON to stdout (for K8s vector/fluent-bit to batch into Parquet/GCS Lakehouse)
+    // 5. Emit structured JSON to stdout (for K8s Vector to route to Pub/Sub & Parquet Lakehouse)
     if let Ok(serialized) = serde_json::to_string(&parquet_record) {
         println!("{}", serialized);
     }
@@ -152,9 +243,9 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
             "WARNING",
             "event_quarantined",
             &format!(
-                "Event {} quarantined for app {}: {}",
+                "Event {} quarantined for tenant {}: {}",
                 parquet_record.event_id,
-                parquet_record.app_id,
+                parquet_record.tenant_id,
                 parquet_record
                     .quarantine_reason
                     .as_deref()
@@ -165,6 +256,7 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
             Some(serde_json::json!({
                 "event_id": parquet_record.event_id,
                 "event_name": parquet_record.event_name,
+                "tenant_id": parquet_record.tenant_id,
                 "app_id": parquet_record.app_id,
                 "is_quarantined": true,
                 "quarantine_reason": parquet_record.quarantine_reason,
@@ -175,15 +267,18 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
             "INFO",
             "event_ingested",
             &format!(
-                "Event {} ({}) ingested successfully",
-                parquet_record.event_id, parquet_record.event_name
+                "Event {} ({}) ingested for tenant {}",
+                parquet_record.event_id, parquet_record.event_name, parquet_record.tenant_id
             ),
             trace_id.as_deref(),
             span_id.as_deref(),
             Some(serde_json::json!({
                 "event_id": parquet_record.event_id,
                 "event_name": parquet_record.event_name,
+                "tenant_id": parquet_record.tenant_id,
                 "app_id": parquet_record.app_id,
+                "has_ad_attribution": parquet_record.has_ad_attribution,
+                "is_conversion": parquet_record.is_conversion,
                 "is_quarantined": false,
             })),
         );
@@ -194,6 +289,6 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
         .status(204)
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        .header("Access-Control-Allow-Headers", "Content-Type")
+        .header("Access-Control-Allow-Headers", "Content-Type, X-Tenant-ID")
         .build()
 }
