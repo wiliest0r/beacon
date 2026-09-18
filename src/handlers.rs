@@ -155,7 +155,10 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
                 "Event {} quarantined for app {}: {}",
                 parquet_record.event_id,
                 parquet_record.app_id,
-                parquet_record.quarantine_reason.as_deref().unwrap_or("unknown")
+                parquet_record
+                    .quarantine_reason
+                    .as_deref()
+                    .unwrap_or("unknown")
             ),
             trace_id.as_deref(),
             span_id.as_deref(),
@@ -173,8 +176,7 @@ pub fn handle_collect_event(req: &Request, config: &ClientConfig) -> Response {
             "event_ingested",
             &format!(
                 "Event {} ({}) ingested successfully",
-                parquet_record.event_id,
-                parquet_record.event_name
+                parquet_record.event_id, parquet_record.event_name
             ),
             trace_id.as_deref(),
             span_id.as_deref(),
