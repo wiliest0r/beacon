@@ -9,4 +9,4 @@ COPY target/wasm32-wasip1/release/beacon_server-opt.wasm /app/target/wasm32-wasi
 
 EXPOSE 8080
 
-ENTRYPOINT ["spin", "up", "--listen", "0.0.0.0:8080", "--file", "/app/spin.toml"]
+ENTRYPOINT ["/bin/sh", "-c", "mkdir -p /var/log/beacon && exec spin up --listen 0.0.0.0:8080 --file /app/spin.toml 2>&1 | tee -a /var/log/beacon/events.log"]
