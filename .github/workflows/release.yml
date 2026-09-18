@@ -1,24 +1,63 @@
-name: Release
+name: Build, Release & Deliver WASM to GKE
 
 on:
   push:
+    branches: [ develop ]
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target Environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
   repository_dispatch:
-    types: [ web_tag_released ]
+    types: [ web_tag_released, web_tag_updated ]
+
+permissions:
+  contents: write
+  id-token: write
 
 jobs:
-  build-and-release:
-    name: Build, Release & Publish OCI
+  build-and-deliver:
+    name: Build WASM & Deploy to GKE
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
 
     steps:
       - name: Checkout Beacon
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Web Tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/web-tag
+          ref: develop
+          path: tmp-web-tag
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build Web Tag Bundle
+        run: |
+          cd tmp-web-tag
+          npm ci || npm install
+          npm run build
+          mkdir -p ../static
+          cp dist/t.min.js ../static/t.min.js
+          TAG_VER=$(node -p "require('./package.json').version")
+          TAG_SHA=$(git rev-parse --short HEAD)
+          cd ..
+          echo "TAG_VER=$TAG_VER" >> $GITHUB_ENV
+          echo "TAG_SHA=$TAG_SHA" >> $GITHUB_ENV
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@master
@@ -26,17 +65,9 @@ jobs:
           toolchain: stable
           targets: wasm32-wasip1
 
-      - name: Install binaryen (wasm-opt) & ORAS
+      - name: Install binaryen (wasm-opt)
         run: |
           sudo apt-get update && sudo apt-get install -y binaryen
-
-      - name: Setup ORAS
-        uses: oras-project/setup-oras@v1
-
-      - name: Download Latest Web Tag Bundle (Sync)
-        run: |
-          mkdir -p static
-          curl -sL https://github.com/${{ github.repository_owner }}/web-tag/releases/latest/download/t.min.js -o static/t.min.js || true
 
       - name: Build WASM Release
         run: cargo build --release --target wasm32-wasip1
@@ -44,43 +75,72 @@ jobs:
       - name: Optimize WASM Binary
         run: |
           wasm-opt -Oz target/wasm32-wasip1/release/beacon_server.wasm -o target/wasm32-wasip1/release/beacon_server-opt.wasm
+          BEACON_VER=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          BEACON_SHA=$(git rev-parse --short HEAD)
+          echo "BEACON_VER=$BEACON_VER" >> $GITHUB_ENV
+          echo "BEACON_SHA=$BEACON_SHA" >> $GITHUB_ENV
 
-      - name: Determine Release Tag
-        id: vars
+      - name: Determine Composite Tag (Strategy 1)
+        id: tagger
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            TAG="${{ github.event.client_payload.tag }}"
+            DISPATCH_TAG="${{ github.event.client_payload.tag }}"
+            TAG="v${BEACON_VER}-tag.${DISPATCH_TAG#v}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"
+            TAG="${{ github.ref_name }}-tag.${TAG_VER}"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            TAG="dev-b${BEACON_SHA}-t${TAG_SHA}"
           else
-            TAG="v0.1.0"
+            TAG="v${BEACON_VER}-tag.${TAG_VER}"
           fi
-          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "composite_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "COMPOSITE_TAG=$TAG" >> $GITHUB_ENV
+          echo "Resolved Composite Tag: $TAG"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Authenticate to Google Cloud (OIDC WIF)
+        uses: google-github-actions/auth@v2
         with:
-          tag_name: ${{ steps.vars.outputs.release_tag }}
-          name: Release ${{ steps.vars.outputs.release_tag }}
-          files: target/wasm32-wasip1/release/beacon_server-opt.wasm
-          generate_release_notes: true
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - name: Log In to GHCR
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Google Artifact Registry
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+          gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
 
-      - name: Publish WASM to GHCR OCI
+      - name: Build and Push Docker OCI Image
         run: |
-          IMAGE_TAG="${{ steps.vars.outputs.release_tag }}"
-          WASM_FILE="target/wasm32-wasip1/release/beacon_server-opt.wasm"
-          TARGET_REF="ghcr.io/${{ github.repository_owner }}/beacon-wasm:$IMAGE_TAG"
-          LATEST_REF="ghcr.io/${{ github.repository_owner }}/beacon-wasm:latest"
+          IMAGE_URI="${{ vars.GCP_GAR_REPOSITORY }}:${{ steps.tagger.outputs.composite_tag }}"
+          LATEST_DEV="${{ vars.GCP_GAR_REPOSITORY }}:latest-dev"
 
-          echo "Publishing to $TARGET_REF and $LATEST_REF..."
-          oras push "$TARGET_REF" \
-            --artifact-type application/vnd.module.wasm.content.layer.v1+wasm \
-            "$WASM_FILE":application/vnd.module.wasm.content.layer.v1+wasm
+          echo "Building image: $IMAGE_URI"
+          docker build -t "$IMAGE_URI" -t "$LATEST_DEV" .
 
-          oras push "$LATEST_REF" \
-            --artifact-type application/vnd.module.wasm.content.layer.v1+wasm \
-            "$WASM_FILE":application/vnd.module.wasm.content.layer.v1+wasm
+          echo "Pushing image to Artifact Registry..."
+          docker push "$IMAGE_URI"
+          if [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            docker push "$LATEST_DEV"
+          fi
+
+      - name: Authenticate GKE & Rollout (Dev Auto-Deploy)
+        if: github.ref == 'refs/heads/develop' || github.event_name == 'repository_dispatch' || github.event.inputs.target_env == 'dev'
+        run: |
+          echo "Obtaining GKE cluster credentials..."
+          gcloud container clusters get-credentials ${{ vars.GKE_CLUSTER_NAME }} \
+            --zone ${{ vars.GKE_ZONE }} \
+            --project ${{ vars.GCP_PROJECT_ID }}
+
+          echo "Updating Kubernetes deployment..."
+          kubectl set image deployment/beacon-server beacon-server=${{ vars.GCP_GAR_REPOSITORY }}:${{ steps.tagger.outputs.composite_tag }} -n beacon
+
+          echo "Waiting for rollout to complete..."
+          kubectl rollout status deployment/beacon-server -n beacon --timeout=180s
+
+          echo "Verifying Live Endpoint..."
+          LB_IP=$(kubectl get svc beacon-service -n beacon -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "LoadBalancer Public IPv4: $LB_IP"
+          curl -f -s -o /dev/null -w "Health check HTTP status: %{http_code}\n" "http://${LB_IP}/healthz"
+          curl -f -s -o /dev/null -w "Tag endpoint HTTP status: %{http_code}\n" "http://${LB_IP}/tag.js"
