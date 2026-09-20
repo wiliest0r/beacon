@@ -1,4 +1,4 @@
-use spin_sdk::http::{Method, Request, Response};
+﻿use spin_sdk::http::{Method, Request, Response};
 use spin_sdk::http_component;
 
 pub mod account_store;
@@ -29,7 +29,7 @@ fn handle_beacon(req: Request) -> Response {
             .header("Access-Control-Allow-Methods", "POST, OPTIONS")
             .header(
                 "Access-Control-Allow-Headers",
-                "Content-Type, X-Account-ID, X-Tenant-ID",
+                "Content-Type, X-Tag-ID, X-Measurement-ID",
             )
             .header("Access-Control-Max-Age", "86400")
             .build(),
