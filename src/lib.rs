@@ -2,9 +2,13 @@ use spin_sdk::http::{Method, Request, Response};
 use spin_sdk::http_component;
 
 pub mod account_store;
+pub mod adapters;
+pub mod application;
+pub mod domain;
 pub mod handlers;
 pub mod models;
 pub mod observability;
+pub mod ports;
 pub mod security;
 
 use account_store::InMemoryAccountStore;
