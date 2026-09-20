@@ -2,12 +2,66 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Client configuration loaded based on domain, app_id or tenant_id
+/// Legacy client configuration kept for backwards compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub app_id: String,
     pub allowed_domains: Vec<String>,
     pub hmac_secret: String,
+    pub enable_ecommerce: bool,
+    pub enable_spa: bool,
+}
+
+/// Status of a B2B business account / tenant
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    Active,
+    Suspended,
+    Provisioning,
+}
+
+/// Security rules and domain validation policies for an account
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountSecurityConfig {
+    pub allowed_domains: Vec<String>,
+    pub hmac_secret: String,
+    pub enforce_domain_check: bool,
+}
+
+/// Supported CRM vendors or generic integration types
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CrmProviderType {
+    Salesforce,
+    Hubspot,
+    Pipedrive,
+    CustomWebhook,
+    #[default]
+    None,
+}
+
+/// CRM configuration contract for account-level lead and deal synchronization
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AccountCrmConfig {
+    pub provider: CrmProviderType,
+    pub enabled: bool,
+    /// Reference to Secret Manager secret (e.g. `projects/.../secrets/beacon-acc_123-crm`)
+    pub secret_ref: Option<String>,
+    /// Custom webhook endpoint for CustomWebhook CRM mode
+    pub webhook_url: Option<String>,
+    /// Optional field mapping: event properties -> CRM fields
+    pub field_mappings: Option<HashMap<String, String>>,
+}
+
+/// Business profile and full configuration of a platform tenant / client account
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountProfile {
+    pub account_id: String,
+    pub name: String,
+    pub status: AccountStatus,
+    pub security: AccountSecurityConfig,
+    pub crm: AccountCrmConfig,
     pub enable_ecommerce: bool,
     pub enable_spa: bool,
 }
@@ -39,9 +93,15 @@ pub struct RawUserIdentity {
 /// Incoming raw payload from client web tag
 #[derive(Debug, Deserialize)]
 pub struct RawClientPayload {
-    /// Multi-tenant identifier (B2B client/account)
+    /// Canonical B2B account identifier
+    #[serde(default)]
+    pub account_id: Option<String>,
+
+    /// Backwards compatibility alias for account_id
     #[serde(default)]
     pub tenant_id: Option<String>,
+
+    /// Legacy application ID
     #[serde(default)]
     pub app_id: Option<String>,
 
@@ -92,7 +152,8 @@ pub struct RawScreenContext {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IngestedParquetEvent {
     // Multi-tenant & Primary Identity Keys
-    pub tenant_id: String,
+    pub account_id: String,
+    pub tenant_id: String, // Kept for backwards compatibility
     pub app_id: String,
     pub event_id: String,
     pub event_name: String,
@@ -145,66 +206,85 @@ pub struct IngestedParquetEvent {
     pub custom_properties_json: String,
 }
 
+/// Universal normalized contract for dispatching conversion events into any CRM
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniversalCrmEvent {
+    pub account_id: String,
+    pub event_id: String,
+    pub event_name: String,
+    pub timestamp: DateTime<Utc>,
+
+    // Visitor & Identity Resolution
+    pub visitor_id: String,
+    pub session_id: Option<String>,
+    pub hashed_email: Option<String>,
+    pub hashed_phone: Option<String>,
+    pub crm_lead_id: Option<String>,
+
+    // Attribution Linking
+    pub gclid: Option<String>,
+    pub fbclid: Option<String>,
+    pub utm_source: Option<String>,
+    pub utm_medium: Option<String>,
+    pub utm_campaign: Option<String>,
+
+    // Conversion & Deal metrics
+    pub is_conversion: bool,
+    pub conversion_value: Option<f64>,
+    pub currency: Option<String>,
+
+    // Custom mapped payload
+    pub properties: HashMap<String, serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_raw_client_payload_deserialization_multitenant() {
-        let json_data = r#"{
-            "tenant_id": "ten_live_test_123",
-            "visitor_id": "vid_abc_456",
-            "session_id": "ses_789",
-            "event_id": "evt_001",
-            "event_name": "purchase",
-            "client_timestamp": "2026-09-19T00:00:00Z",
+    fn test_payload_deserialization_with_account_id() {
+        let json_payload = r#"{
+            "account_id": "acc_nike_global_01",
+            "visitor_id": "vis_anon_987",
+            "session_id": "sess_456",
+            "event_id": "evt_789",
+            "event_name": "lead_submission",
+            "client_timestamp": "2026-09-20T12:00:00Z",
             "marketing": {
                 "gclid": "test_gclid_12345",
                 "utm_source": "google",
-                "utm_campaign": "autumn_promo"
+                "utm_campaign": "spring_sale"
             },
             "user_identity": {
-                "hashed_email": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                "hashed_email": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "crm_lead_id": "SF-LEAD-99120"
             }
         }"#;
 
-        let payload: RawClientPayload =
-            serde_json::from_str(json_data).expect("Failed to deserialize");
-        assert_eq!(payload.tenant_id.as_deref(), Some("ten_live_test_123"));
-        assert_eq!(payload.visitor_id.as_deref(), Some("vid_abc_456"));
-        assert_eq!(payload.event_name, "purchase");
+        let parsed: RawClientPayload = serde_json::from_str(json_payload).unwrap();
+        assert_eq!(parsed.account_id.as_deref(), Some("acc_nike_global_01"));
+        assert_eq!(parsed.visitor_id.as_deref(), Some("vis_anon_987"));
 
-        let marketing = payload
-            .marketing
-            .expect("Marketing context should be present");
+        let marketing = parsed.marketing.unwrap();
         assert_eq!(marketing.gclid.as_deref(), Some("test_gclid_12345"));
         assert_eq!(marketing.utm_source.as_deref(), Some("google"));
 
-        let identity = payload
-            .user_identity
-            .expect("User identity should be present");
-        assert_eq!(
-            identity.hashed_email.as_deref(),
-            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-        );
+        let identity = parsed.user_identity.unwrap();
+        assert_eq!(identity.crm_lead_id.as_deref(), Some("SF-LEAD-99120"));
     }
 
     #[test]
-    fn test_raw_client_payload_backwards_compatible() {
-        let json_data = r#"{
-            "app_id": "APP-XYZ-123",
-            "anonymous_id": "anon-999",
-            "session_id": "ses-999",
-            "event_id": "evt-999",
+    fn test_backwards_compatibility_with_tenant_id() {
+        let json_payload = r#"{
+            "tenant_id": "ten_legacy_brand",
+            "session_id": "sess_111",
+            "event_id": "evt_222",
             "event_name": "page_view",
-            "client_timestamp": "2026-09-19T00:00:00Z"
+            "client_timestamp": "2026-09-20T12:00:00Z"
         }"#;
 
-        let payload: RawClientPayload =
-            serde_json::from_str(json_data).expect("Failed to deserialize");
-        assert_eq!(payload.app_id.as_deref(), Some("APP-XYZ-123"));
-        assert_eq!(payload.anonymous_id.as_deref(), Some("anon-999"));
-        assert!(payload.tenant_id.is_none());
-        assert!(payload.marketing.is_none());
+        let parsed: RawClientPayload = serde_json::from_str(json_payload).unwrap();
+        assert_eq!(parsed.tenant_id.as_deref(), Some("ten_legacy_brand"));
+        assert_eq!(parsed.account_id, None);
     }
 }
