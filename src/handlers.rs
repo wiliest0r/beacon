@@ -1,4 +1,4 @@
-use chrono::Utc;
+﻿use chrono::Utc;
 use spin_sdk::http::{Request, Response};
 use std::fs;
 
@@ -36,8 +36,8 @@ pub fn handle_serve_tag(req: &Request, store: &dyn AccountConfigProvider) -> Res
     });
 
     let account_id = req
-        .header("x-account-id")
-        .or_else(|| req.header("x-tenant-id"))
+        .header("x-tag-id")
+        .or_else(|| req.header("x-measurement-id"))
         .and_then(|h| h.as_str())
         .map(String::from)
         .or(query_account_id)
@@ -142,31 +142,40 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
             .build();
     };
 
-    // Resolve account_id (with fallbacks: X-Account-ID -> payload.account_id -> X-Tenant-ID -> payload.tenant_id -> app_id)
+    // Resolve account_id from client standard contract (X-Tag-ID -> X-Measurement-ID -> payload.tag_id -> payload.measurement_id -> payload.account_id)
     let account_id = req
-        .header("x-account-id")
-        .and_then(|h| h.as_str())
-        .map(String::from)
+        .header("x-tag-id")
+        .or_else(|| req.header("x-measurement-id"))
+        .and_then(|h| h.as_str().map(String::from))
+        .or_else(|| payload.tag_id.clone())
+        .or_else(|| payload.measurement_id.clone())
         .or_else(|| payload.account_id.clone())
-        .or_else(|| {
-            req.header("x-tenant-id")
-                .and_then(|h| h.as_str())
-                .map(String::from)
-        })
         .or_else(|| payload.tenant_id.clone())
         .or_else(|| payload.app_id.clone())
         .unwrap_or_else(|| "acc_playtests_dev".to_string());
 
-    let app_id = payload.app_id.clone().unwrap_or_else(|| account_id.clone());
-
-    let device_id = payload
-        .device_id
+    let app_id = payload
+        .tag_id
         .clone()
+        .or_else(|| payload.measurement_id.clone())
+        .or_else(|| payload.app_id.clone())
+        .unwrap_or_else(|| account_id.clone());
+
+    // Resolve physical device / browser entity (Standard: client_id -> device_id -> visitor_id -> anonymous_id)
+    let device_id = payload
+        .client_id
+        .clone()
+        .or_else(|| payload.device_id.clone())
         .or_else(|| payload.visitor_id.clone())
         .or_else(|| payload.anonymous_id.clone())
-        .unwrap_or_else(|| "anonymous_device".to_string());
+        .unwrap_or_else(|| "anonymous_client".to_string());
 
-    let device_fp = payload.device_fp.clone();
+    // Resolve signature / entropy hash (Standard: sig -> client_sig -> device_fp)
+    let device_fp = payload
+        .sig
+        .clone()
+        .or_else(|| payload.client_sig.clone())
+        .or_else(|| payload.device_fp.clone());
     let visitor_id = device_id.clone();
     let anonymous_id = device_id.clone();
 
@@ -406,7 +415,7 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
         .header("Access-Control-Allow-Methods", "POST, OPTIONS")
         .header(
             "Access-Control-Allow-Headers",
-            "Content-Type, X-Account-ID, X-Tenant-ID",
+            "Content-Type, X-Tag-ID, X-Measurement-ID",
         )
         .build()
 }
