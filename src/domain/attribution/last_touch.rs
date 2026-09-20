@@ -1,4 +1,4 @@
-use super::{AttributedTouchpoint, AttributionEvaluator};
+﻿use super::{AttributedTouchpoint, AttributionEvaluator};
 use crate::domain::touchpoint::ConversionPath;
 
 /// Last-Touch Attribution: Attributes 100% of conversion credit to final touchpoint prior to purchase
@@ -44,7 +44,7 @@ mod tests {
     fn test_last_touch_attribution() {
         let conv = Conversion {
             conversion_id: "c1".into(),
-            visitor_id: "v1".into(),
+            device_id: "v1".into(),
             session_id: "s2".into(),
             timestamp: Utc::now(),
             value: 150.0,
@@ -54,16 +54,18 @@ mod tests {
         let t1 = Touchpoint {
             touchpoint_id: "t1".into(),
             session_id: "s1".into(),
-            visitor_id: "v1".into(),
+            device_id: "v1".into(),
             timestamp: Utc::now(),
+            device_fp: None,
             dimensions: MarketingDimensions::default(),
             is_direct: false,
         };
         let t2 = Touchpoint {
             touchpoint_id: "t2".into(),
             session_id: "s2".into(),
-            visitor_id: "v1".into(),
+            device_id: "v1".into(),
             timestamp: Utc::now(),
+            device_fp: None,
             dimensions: MarketingDimensions::default(),
             is_direct: false,
         };

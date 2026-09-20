@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+﻿use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -105,6 +105,14 @@ pub struct RawClientPayload {
     #[serde(default)]
     pub app_id: Option<String>,
 
+    /// Persistent client physical device or browser identifier
+    #[serde(default)]
+    pub device_id: Option<String>,
+
+    /// Hardware/canvas/screen fingerprint hash
+    #[serde(default)]
+    pub device_fp: Option<String>,
+
     /// End-user identifiers (B2C site visitor)
     #[serde(default)]
     pub visitor_id: Option<String>,
@@ -164,7 +172,9 @@ pub struct IngestedParquetEvent {
     pub is_quarantined: bool,
     pub quarantine_reason: Option<String>,
 
-    // End-User Identity Dimensions
+    // Device & End-User Identity Dimensions
+    pub device_id: String,
+    pub device_fp: Option<String>,
     pub visitor_id: String,
     pub anonymous_id: String,
     pub session_id: String,
@@ -214,7 +224,8 @@ pub struct UniversalCrmEvent {
     pub event_name: String,
     pub timestamp: DateTime<Utc>,
 
-    // Visitor & Identity Resolution
+    // Device & Identity Resolution
+    pub device_id: String,
     pub visitor_id: String,
     pub session_id: Option<String>,
     pub hashed_email: Option<String>,
