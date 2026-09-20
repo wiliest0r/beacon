@@ -1,4 +1,4 @@
-name: Build, Release & Deliver WASM to GKE
+﻿name: Build, Release & Deliver WASM to GKE
 
 on:
   push:
@@ -26,7 +26,7 @@ permissions:
 jobs:
   build-and-deliver:
     name: Build WASM & Deploy to GKE
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: ${{ inputs.target_env || 'dev' }}
 
     steps:
