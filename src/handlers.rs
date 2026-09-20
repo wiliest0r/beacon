@@ -1,4 +1,4 @@
-﻿use chrono::Utc;
+use chrono::Utc;
 use spin_sdk::http::{Request, Response};
 use std::fs;
 
@@ -21,7 +21,14 @@ pub fn handle_serve_tag(req: &Request, store: &dyn AccountConfigProvider) -> Res
         let mut parts = param.split('=');
         let key = parts.next()?;
         let val = parts.next()?;
-        if key == "aid" || key == "account_id" || key == "tid" || key == "tenant_id" {
+        if key == "tid"
+            || key == "tag_id"
+            || key == "mid"
+            || key == "measurement_id"
+            || key == "aid"
+            || key == "account_id"
+            || key == "tenant_id"
+        {
             Some(val.to_string())
         } else {
             None
@@ -67,8 +74,8 @@ pub fn handle_serve_tag(req: &Request, store: &dyn AccountConfigProvider) -> Res
 
     // Inject initial configuration and token (maintains backwards compatibility with tenantId)
     let injected_config = format!(
-        "window.__BEACON_CONFIG__={{accountId:\"{}\",tenantId:\"{}\",appId:\"{}\",token:\"{}\",spa:{},ecommerce:{}}};window.__OP_CONFIG__=window.__BEACON_CONFIG__;",
-        profile.account_id, profile.account_id, profile.account_id, token, profile.enable_spa, profile.enable_ecommerce
+        "window.__BEACON_CONFIG__={{tagId:\"{}\",measurementId:\"{}\",accountId:\"{}\",tenantId:\"{}\",appId:\"{}\",token:\"{}\",spa:{},ecommerce:{}}};window.__OP_CONFIG__=window.__BEACON_CONFIG__;",
+        profile.account_id, profile.account_id, profile.account_id, profile.account_id, profile.account_id, token, profile.enable_spa, profile.enable_ecommerce
     );
 
     let final_js = format!("{}{}", injected_config, base_script);
