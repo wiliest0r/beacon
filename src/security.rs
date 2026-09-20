@@ -18,7 +18,7 @@ pub fn generate_ephemeral_token(secret: &str, app_id: &str, timestamp: i64) -> S
     format!("{}:{}:{}", app_id, timestamp, signature)
 }
 
-/// Validate incoming client token against expiration and cryptographic signature
+/// Validate incoming client token against expiration and cryptographic signature (Constant-time)
 pub fn validate_ephemeral_token(
     secret: &str,
     token_str: &str,
@@ -47,16 +47,17 @@ pub fn validate_ephemeral_token(
         return Err("Token expired or invalid timestamp drift");
     }
 
-    // Verify signature
+    // Decode signature bytes for constant-time cryptographic verification
+    let sig_bytes = hex::decode(signature).map_err(|_| "Invalid hex signature")?;
+
+    // Verify signature using constant-time verify_slice to eliminate timing side-channel attacks
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     let message = format!("{}:{}", token_app_id, timestamp_str);
     mac.update(message.as_bytes());
 
-    let expected_sig = hex::encode(mac.finalize().into_bytes());
-    if expected_sig != signature {
-        return Err("Cryptographic signature mismatch");
-    }
+    mac.verify_slice(&sig_bytes)
+        .map_err(|_| "Cryptographic signature mismatch")?;
 
     Ok(())
 }
@@ -87,4 +88,52 @@ fn guard_domain(raw_url: Option<&str>, allowed: &[String]) -> bool {
             host == pattern
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SECRET: &str = "test-security-poc-32-bytes-long!";
+
+    #[test]
+    fn test_valid_token_verification() {
+        let now = Utc::now().timestamp();
+        let token = generate_ephemeral_token(TEST_SECRET, "acc_test_123", now);
+        let result = validate_ephemeral_token(TEST_SECRET, &token, "acc_test_123");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tampered_token_signature() {
+        let now = Utc::now().timestamp();
+        let token = generate_ephemeral_token(TEST_SECRET, "acc_test_123", now);
+        let mut tampered = token.clone();
+        tampered.pop();
+        tampered.push('0'); // change last hex char
+        let result = validate_ephemeral_token(TEST_SECRET, &tampered, "acc_test_123");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Cryptographic signature mismatch");
+    }
+
+    #[test]
+    fn test_expired_token() {
+        let expired_time = Utc::now().timestamp() - 2000; // > 1800s
+        let token = generate_ephemeral_token(TEST_SECRET, "acc_test_123", expired_time);
+        let result = validate_ephemeral_token(TEST_SECRET, &token, "acc_test_123");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "Token expired or invalid timestamp drift"
+        );
+    }
+
+    #[test]
+    fn test_token_account_mismatch() {
+        let now = Utc::now().timestamp();
+        let token = generate_ephemeral_token(TEST_SECRET, "acc_attacker", now);
+        let result = validate_ephemeral_token(TEST_SECRET, &token, "acc_victim");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Token app_id mismatch");
+    }
 }

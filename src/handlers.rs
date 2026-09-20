@@ -1,4 +1,4 @@
-﻿use chrono::Utc;
+use chrono::Utc;
 use spin_sdk::http::{Request, Response};
 use std::fs;
 
@@ -123,8 +123,31 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
         .and_then(|h| h.as_str())
         .map(String::from);
 
-    // 2. Parse payload body
+    // 2. Defense-in-depth: enforce max request body size (256 KB) to prevent memory exhaustion / JSON DoS
+    const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
     let body_bytes = req.body();
+    if body_bytes.len() > MAX_PAYLOAD_BYTES {
+        log_structured(
+            "WARNING",
+            "payload_too_large",
+            &format!(
+                "Rejected payload exceeding size limit ({} > {} bytes)",
+                body_bytes.len(),
+                MAX_PAYLOAD_BYTES
+            ),
+            trace_id.as_deref(),
+            span_id.as_deref(),
+            None,
+        );
+
+        return Response::builder()
+            .status(413)
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(r#"{"error":"payload_too_large"}"#)
+            .build();
+    }
+
     let Ok(payload) = serde_json::from_slice::<RawClientPayload>(body_bytes) else {
         log_structured(
             "WARNING",
