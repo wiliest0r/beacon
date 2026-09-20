@@ -1,4 +1,4 @@
-﻿use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -93,7 +93,13 @@ pub struct RawUserIdentity {
 /// Incoming raw payload from client web tag
 #[derive(Debug, Deserialize)]
 pub struct RawClientPayload {
-    /// Canonical B2B account identifier
+    /// Web Analytics Tag & Measurement IDs (Standard Public Client Contract)
+    #[serde(default)]
+    pub tag_id: Option<String>,
+    #[serde(default)]
+    pub measurement_id: Option<String>,
+
+    /// Canonical B2B account identifier (Internal Contract)
     #[serde(default)]
     pub account_id: Option<String>,
 
@@ -105,7 +111,17 @@ pub struct RawClientPayload {
     #[serde(default)]
     pub app_id: Option<String>,
 
-    /// Persistent client physical device or browser identifier
+    /// Standard Web Analytics Client ID (GA4/Segment client_id)
+    #[serde(default)]
+    pub client_id: Option<String>,
+
+    /// Zero-dependency browser signature / entropy hash (Anti-AdBlock / Anti-Fingerprint filter)
+    #[serde(default)]
+    pub sig: Option<String>,
+    #[serde(default)]
+    pub client_sig: Option<String>,
+
+    /// Persistent client physical device or browser identifier (Backward compat)
     #[serde(default)]
     pub device_id: Option<String>,
 
@@ -251,6 +267,26 @@ pub struct UniversalCrmEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_client_standard_contract_deserialization() {
+        let json_payload = r#"{
+            "tag_id": "GTM-PLAYTESTS-01",
+            "client_id": "c7a8b9d0-1234-4567-89ab-cdef01234567",
+            "sig": "a9f4c3b218e76543",
+            "session_id": "sess_456",
+            "event_id": "evt_789",
+            "event_name": "page_view",
+            "client_timestamp": "2026-09-20T12:00:00Z"
+        }"#;
+
+        let parsed: RawClientPayload = serde_json::from_str(json_payload).unwrap();
+        assert_eq!(parsed.tag_id.as_deref(), Some("GTM-PLAYTESTS-01"));
+        assert_eq!(
+            parsed.client_id.as_deref(),
+            Some("c7a8b9d0-1234-4567-89ab-cdef01234567")
+        );
+        assert_eq!(parsed.sig.as_deref(), Some("a9f4c3b218e76543"));
+    }
 
     #[test]
     fn test_payload_deserialization_with_account_id() {
