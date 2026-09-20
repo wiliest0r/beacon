@@ -1,4 +1,4 @@
-use chrono::Utc;
+﻿use chrono::Utc;
 use spin_sdk::http::{Request, Response};
 use std::fs;
 
@@ -152,13 +152,16 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
 
     let app_id = payload.app_id.clone().unwrap_or_else(|| account_id.clone());
 
-    let visitor_id = payload
-        .visitor_id
+    let device_id = payload
+        .device_id
         .clone()
+        .or_else(|| payload.visitor_id.clone())
         .or_else(|| payload.anonymous_id.clone())
-        .unwrap_or_else(|| "anonymous".to_string());
+        .unwrap_or_else(|| "anonymous_device".to_string());
 
-    let anonymous_id = visitor_id.clone();
+    let device_fp = payload.device_fp.clone();
+    let visitor_id = device_id.clone();
+    let anonymous_id = device_id.clone();
 
     // Query Account Store
     let account_profile = store
@@ -272,6 +275,8 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
         server_timestamp: now_utc,
         is_quarantined,
         quarantine_reason,
+        device_id: device_id.clone(),
+        device_fp,
         visitor_id: visitor_id.clone(),
         anonymous_id,
         session_id: payload.session_id.clone(),
@@ -312,6 +317,7 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
             event_id: payload.event_id,
             event_name: payload.event_name,
             timestamp: now_utc,
+            device_id: device_id.clone(),
             visitor_id,
             session_id: Some(payload.session_id),
             hashed_email,

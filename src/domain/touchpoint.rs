@@ -8,7 +8,8 @@ use super::dimensions::MarketingDimensions;
 pub struct Touchpoint {
     pub touchpoint_id: String,
     pub session_id: String,
-    pub visitor_id: String,
+    pub device_id: String,
+    pub device_fp: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub dimensions: MarketingDimensions,
     pub is_direct: bool,
@@ -18,7 +19,7 @@ pub struct Touchpoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Conversion {
     pub conversion_id: String,
-    pub visitor_id: String,
+    pub device_id: String,
     pub session_id: String,
     pub timestamp: DateTime<Utc>,
     pub value: f64,
